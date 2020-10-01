@@ -1,12 +1,13 @@
 package org.alan;
 
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
-import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
-import org.bouncycastle.cert.X509v3CertificateBuilder;
+import org.bouncycastle.asn1.ua.DSTU4145NamedCurves;
+import org.bouncycastle.asn1.ua.UAObjectIdentifiers;
+import org.bouncycastle.crypto.params.ECDomainParameters;
+import org.bouncycastle.jcajce.spec.DSTU4145ParameterSpec;
 import org.bouncycastle.jce.ECNamedCurveTable;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.jce.spec.ECParameterSpec;
+import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.openssl.PKCS8Generator;
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.bouncycastle.openssl.jcajce.JcaPKCS8Generator;
@@ -24,19 +25,28 @@ import javax.security.auth.x500.X500Principal;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.math.BigInteger;
 import java.security.*;
 
-import static org.apache.commons.io.FileUtils.*;
 import static org.apache.commons.io.FileUtils.writeByteArrayToFile;
-import static sun.java2d.cmm.ColorTransform.Out;
 
-public class Main {
-     public static void main(String[] args) throws OperatorCreationException, NoSuchProviderException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, IOException {
+public class MainDstu {
+     public static void main(String[] args) throws OperatorCreationException, NoSuchProviderException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, IOException, InvalidKeyException, SignatureException {
          Security.addProvider(new BouncyCastleProvider());
 
-         ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
-         KeyPairGenerator g = KeyPairGenerator.getInstance("ECDSA", "BC");
-         g.initialize(ecSpec, new SecureRandom());
+         // ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
+         ECDomainParameters ecDP = DSTU4145NamedCurves.getByOID(UAObjectIdentifiers.dstu4145le.branch("2.2"));
+         ECCurve curve = ecDP.getCurve();
+
+         // NOTE: For some reason this test uses an alternate base-point to the registry curve
+         ecDP = new ECDomainParameters(curve,
+                 curve.createPoint(new BigInteger("BE6628EC3E67A91A4E470894FBA72B52C515F8AEE9", 16), new BigInteger("D9DEEDF655CF5412313C11CA566CDC71F4DA57DB45C", 16)),
+                 ecDP.getN(), ecDP.getH(), ecDP.getSeed());
+
+         DSTU4145ParameterSpec spec = new DSTU4145ParameterSpec(ecDP);
+
+         KeyPairGenerator g = KeyPairGenerator.getInstance("DSTU4145", "BC");
+         g.initialize(spec, new SecureRandom());
          KeyPair pair = g.generateKeyPair();
 
          JceOpenSSLPKCS8EncryptorBuilder encryptorBuilder = new JceOpenSSLPKCS8EncryptorBuilder(PKCS8Generator.AES_128_CBC);
@@ -45,18 +55,42 @@ public class Main {
          OutputEncryptor encryptor = encryptorBuilder.build();
 
          JcaPKCS8Generator pkcs8 = new JcaPKCS8Generator(pair.getPrivate(), encryptor );
-         JcaPEMWriter privateKeyWriter = new JcaPEMWriter(new FileWriter("olga-private.pem"));
+         JcaPEMWriter privateKeyWriter = new JcaPEMWriter(new FileWriter("dstu-mel-private.pem"));
          PemObject pemkey = pkcs8.generate();
          privateKeyWriter.writeObject(pemkey);
          privateKeyWriter.close();
 
          PKCS10CertificationRequestBuilder p10Builder = new JcaPKCS10CertificationRequestBuilder(
-                 new X500Principal("CN=Olga Bondar, C=UA"), pair.getPublic());
-         JcaContentSignerBuilder csBuilder = new JcaContentSignerBuilder("SHA256withECDSA");
+                 new X500Principal("CN=Mel DSTU Test, C=UA"), pair.getPublic());
+         JcaContentSignerBuilder csBuilder = new JcaContentSignerBuilder("GOST34311withDSTU4145");
          ContentSigner signer = csBuilder.build(pair.getPrivate());
          PKCS10CertificationRequest csr = p10Builder.build(signer);
 
-         writeByteArrayToFile(new File("olga.csr"), csr.getEncoded());
+         // test keys
+         Signature signatureProvcider = Signature.getInstance("GOST34311withDSTU4145", BouncyCastleProvider.PROVIDER_NAME);
+
+         // sign
+         signatureProvcider.initSign(pair.getPrivate());
+         signatureProvcider.update("test".getBytes());
+         byte[] signature = signatureProvcider.sign();
+
+
+         // verify
+         signatureProvcider.initVerify(pair.getPublic());
+         signatureProvcider.update("test".getBytes());
+         boolean verify = signatureProvcider.verify(signature);
+
+         System.out.printf("Signature is %s", verify);
+
+         if(verify) {
+             writeByteArrayToFile(new File("mel-dstu.csr"), csr.getEncoded());
+
+             writeByteArrayToFile(new File("priv-dstu.dat"), pair.getPrivate().getEncoded());
+             writeByteArrayToFile(new File("pub-dstu.dat"), pair.getPublic().getEncoded());
+
+         }else{
+             throw new Error("Invalid signature");
+         }
      }
 }
 /*
